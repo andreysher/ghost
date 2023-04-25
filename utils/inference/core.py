@@ -8,6 +8,7 @@ from tqdm import tqdm
 from .faceshifter_run import faceshifter_batch
 from .image_processing import crop_face, normalize_and_torch, normalize_and_torch_batch
 from .video_processing import read_video, crop_frames_and_get_transforms, resize_frames
+from utils.inference.benchmark import Benchmark
 
 
 def transform_target_to_torch(resized_frs: np.ndarray, half=True) -> torch.tensor:
@@ -41,21 +42,26 @@ def model_inference(full_frames: List[np.ndarray],
     Using original frames get faceswaped frames and transofrmations
     """
     # Get Arcface embeddings of target image
+    Benchmark.start_measure("get target embedding")
     target_norm = normalize_and_torch_batch(np.array(target))
     target_embeds = netArc(F.interpolate(target_norm, scale_factor=0.5, mode='bilinear', align_corners=True))
-    
+    Benchmark.end_measure("get target embedding")
+
     # Get the cropped faces from original frames and transformations to get those crops
     crop_frames_list, tfm_array_list = crop_frames_and_get_transforms(full_frames, target_embeds, app, netArc, crop_size, set_target, similarity_th=similarity_th)
     
     # Normalize source images and transform to torch and get Arcface embeddings
+    Benchmark.start_measure("source kpt model")
     source_embeds = []
     for source_curr in source:
         source_curr = normalize_and_torch(source_curr)
         source_embeds.append(netArc(F.interpolate(source_curr, scale_factor=0.5, mode='bilinear', align_corners=True)))
-    
+    Benchmark.end_measure("source kpt model")
+
     final_frames_list = []
     for idx, (crop_frames, tfm_array, source_embed) in enumerate(zip(crop_frames_list, tfm_array_list, source_embeds)):
         # Resize croped frames and get vector which shows on which frames there were faces
+        Benchmark.start_measure("generate: before call")
         resized_frs, present = resize_frames(crop_frames)
         resized_frs = np.array(resized_frs)
 
@@ -69,10 +75,14 @@ def model_inference(full_frames: List[np.ndarray],
         size = target_batch_rs.shape[0]
         model_output = []
 
+        Benchmark.end_measure("generate: before call")
         for i in tqdm(range(0, size, BS)):
+            Benchmark.start_measure("generate: model call")
             Y_st = faceshifter_batch(source_embed, target_batch_rs[i:i+BS], G)
+            Benchmark.end_measure("generate: model call")
             model_output.append(Y_st)
         torch.cuda.empty_cache()
+        Benchmark.start_measure("generate: postprocess")
         model_output = np.concatenate(model_output)
 
         # create list of final frames with transformed faces
@@ -86,5 +96,6 @@ def model_inference(full_frames: List[np.ndarray],
             else:
                 final_frames.append([])
         final_frames_list.append(final_frames)
-    
+        Benchmark.end_measure("generate: postprocess")
+
     return final_frames_list, crop_frames_list, full_frames, tfm_array_list   

@@ -8,6 +8,7 @@ import sys
 # sys.path.append('/home/jovyan/FaceShifter-2/FaceShifter3/')
 from insightface_func.face_detect_crop_single import Face_detect_crop
 import kornia
+from utils.inference.benchmark import Benchmark
 
 
 M = np.array([[ 0.57142857, 0., 32.],[ 0.,0.57142857, 32.]])
@@ -139,6 +140,7 @@ class Handler:
     
     
     def get_without_detection_without_transform(self, img):
+        Benchmark.start_measure("before kpt model call")
         input_blob = np.zeros((1, 3) + self.image_size, dtype=np.float32)
         rimg = cv2.warpAffine(img, M, self.image_size, borderValue=0.0)
         rimg = cv2.cvtColor(rimg, cv2.COLOR_BGR2RGB)
@@ -147,13 +149,17 @@ class Handler:
         input_blob[0] = rimg
         data = mx.nd.array(input_blob)
         db = mx.io.DataBatch(data=(data, ))
+        Benchmark.end_measure("before kpt model call")
+        Benchmark.start_measure("kpt model call")
         self.model.forward(db, is_train=False)
         pred = self.model.get_outputs()[-1].asnumpy()[0]
+        Benchmark.end_measure("kpt model call")
+        Benchmark.start_measure("after kpt model call")
         pred = pred.reshape((-1, 2))
         pred[:, 0:2] += 1
         pred[:, 0:2] *= (self.image_size[0] // 2)
         pred = trans_points2d(pred, IM)
-        
+        Benchmark.end_measure("after kpt model call")
         return pred
     
     

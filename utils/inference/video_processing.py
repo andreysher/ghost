@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 import torchvision.transforms as transforms
 import kornia
+from utils.inference.benchmark import Benchmark
 
 
 def add_audio_from_another_video(video_with_sound: str, 
@@ -126,36 +127,42 @@ def crop_frames_and_get_transforms(full_frames: List[np.ndarray],
     target_embeds = F.normalize(target_embeds)
     for frame in tqdm(full_frames):
         try:
+            Benchmark.start_measure("kpt model")
             kps = app.get(frame, crop_size)
-            if len(kps) > 1 or set_target:
-                faces = []
-                for p in kps:
-                    M, _ = face_align.estimate_norm(p, crop_size, mode ='None') 
-                    align_img = cv2.warpAffine(frame, M, (crop_size, crop_size), borderValue=0.0)
-                    faces.append(align_img)    
-                
-                face_norm = normalize_and_torch_batch(np.array(faces))
-                face_norm = F.interpolate(face_norm, scale_factor=0.5, mode='bilinear', align_corners=True)
-                face_embeds = netArc(face_norm)
-                face_embeds = F.normalize(face_embeds)
-
-                similarity = face_embeds@target_embeds.T
-                best_idxs = similarity.argmax(0).detach().cpu().numpy()
-                for idx, best_idx in enumerate(best_idxs):
-                    if similarity[best_idx][idx] > similarity_th:
-                        kps_array[idx].append(kps[best_idx])
-                    else:
-                        kps_array[idx].append([])
-
-            else:
-                kps_array[0].append(kps[0])     
+            Benchmark.end_measure("kpt model")
+            # if len(kps) > 1 or set_target:
+            #     faces = []
+            #     for p in kps:
+            #         M, _ = face_align.estimate_norm(p, crop_size, mode ='None')
+            #         align_img = cv2.warpAffine(frame, M, (crop_size, crop_size), borderValue=0.0)
+            #         faces.append(align_img)
+            #
+            #     face_norm = normalize_and_torch_batch(np.array(faces))
+            #     face_norm = F.interpolate(face_norm, scale_factor=0.5, mode='bilinear', align_corners=True)
+            #     face_embeds = netArc(face_norm)
+            #     face_embeds = F.normalize(face_embeds)
+            #
+            #     similarity = face_embeds@target_embeds.T
+            #     best_idxs = similarity.argmax(0).detach().cpu().numpy()
+            #     for idx, best_idx in enumerate(best_idxs):
+            #         if similarity[best_idx][idx] > similarity_th:
+            #             kps_array[idx].append(kps[best_idx])
+            #         else:
+            #             kps_array[idx].append([])
+            #
+            # else:
+            # NOTE: we don't need embedding extraction because always one face on image
+            kps_array[0].append(kps[0])
             
         except TypeError:
             for q in range (len(target_embeds)):                
                 kps_array[0].append([])
-        
+
+    Benchmark.start_measure("smooth kpt")
     smooth_kps = smooth_landmarks(kps_array, n = 2)
-                
+    Benchmark.end_measure("smooth kpt")
+
+    Benchmark.start_measure("crop affine")
     for i, frame in tqdm(enumerate(full_frames)):
         for q in range (len(target_embeds)):  
             try:
@@ -168,6 +175,7 @@ def crop_frames_and_get_transforms(full_frames: List[np.ndarray],
                 tfm_array[q].append([])     
                 
     torch.cuda.empty_cache()
+    Benchmark.end_measure("crop affine")
     return crop_frames, tfm_array
 
 
@@ -209,29 +217,37 @@ def get_final_video(final_frames: List[np.ndarray],
             break
         for j in range(len(crop_frames)):
             try:
+                Benchmark.start_measure("resize")
                 swap = cv2.resize(final_frames[j][i], (224, 224))
+                Benchmark.end_measure("resize")
                 
                 if len(crop_frames[j][i]) == 0:
                     params[j] = None
                     continue
                     
                 landmarks = handler.get_without_detection_without_transform(swap)
+                Benchmark.start_measure("face mask static")
                 if params[j] == None:     
                     landmarks_tgt = handler.get_without_detection_without_transform(crop_frames[j][i])
                     mask, params[j] = face_mask_static(swap, landmarks, landmarks_tgt, params[j])
                 else:
-                    mask = face_mask_static(swap, landmarks, landmarks_tgt, params[j])    
-                        
+                    mask = face_mask_static(swap, landmarks, landmarks_tgt, params[j])
+                Benchmark.end_measure("face mask static")
+
+                Benchmark.start_measure("np to torch")
                 swap = torch.from_numpy(swap).cuda().permute(2,0,1).unsqueeze(0).type(torch.float32)
                 mask = torch.from_numpy(mask).cuda().unsqueeze(0).unsqueeze(0).type(torch.float32)
                 full_frame = torch.from_numpy(result_frames[i]).cuda().permute(2,0,1).unsqueeze(0)
                 mat = torch.from_numpy(tfm_array[j][i]).cuda().unsqueeze(0).type(torch.float32)
-                
+                Benchmark.end_measure("np to torch")
+
+                Benchmark.start_measure("swap affine")
                 mat_rev = kornia.invert_affine_transform(mat)
                 swap_t = kornia.warp_affine(swap, mat_rev, size)
                 mask_t = kornia.warp_affine(mask, mat_rev, size)
                 final = (mask_t*swap_t + (1-mask_t)*full_frame).type(torch.uint8).squeeze().permute(1,2,0).cpu().detach().numpy()
-                
+                Benchmark.end_measure("swap affine")
+
                 result_frames[i] = final
                 torch.cuda.empty_cache()
 

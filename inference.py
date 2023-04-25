@@ -15,6 +15,9 @@ from insightface_func.face_detect_crop_multi import Face_detect_crop
 from arcface_model.iresnet import iresnet100
 from models.pix2pix_model import Pix2PixModel
 from models.config_sr import TestOptions
+from utils.inference.benchmark import Benchmark
+import warnings
+warnings.filterwarnings("ignore")
 
 
 def init_models(args):
@@ -91,7 +94,7 @@ def main(args):
             print("Bad target images!")
             exit()
         
-    start = time.time()
+    Benchmark.start_measure("Total")
     final_frames_list, crop_frames_list, full_frames, tfm_array_list = model_inference(full_frames,
                                                                                        source,
                                                                                        target,
@@ -119,9 +122,10 @@ def main(args):
     else:
         result = get_final_image(final_frames_list, crop_frames_list, full_frames[0], tfm_array_list, handler)
         cv2.imwrite(args.out_image_name, result)
-        print(f'Swapped Image saved with path {args.out_image_name}')     
-        
-    print('Total time: ', time.time()-start)
+        print(f'Swapped Image saved with path {args.out_image_name}')
+
+    Benchmark.end_measure("Total")
+    Benchmark.print_results()
     
 
 if __name__ == "__main__":
